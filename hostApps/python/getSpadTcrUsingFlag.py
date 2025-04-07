@@ -598,7 +598,7 @@ def measCntRate(spadEnPattern, measTime, numPdc):
     SPD_AVG = [-1]*numPdc
     for iPdc in range(0, numPdc):
         ZPP = db.getPdcZPP(iPdc=iPdc, zppSingle=PDC_ZPP_ITEM.AVG)
-        if (ZPP != None) and (ZPP.AVG != -1):
+        if (ZPP != None) and (ZPP.AVG != -1 and N_SPAD[iPdc] > 0):
             # use ZPP value and normalize count rate to 1 sec to have cps
             TOT_AVG[iPdc] = ZPP.AVG / measTime
             SPD_AVG[iPdc] = TOT_AVG[iPdc]/N_SPAD[iPdc]
