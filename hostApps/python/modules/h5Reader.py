@@ -267,7 +267,21 @@ class h5Reader:
         """
         if self.h5 == None:
             dbgPrint(f"Opening file {self.hfFile}")
-            self.h5 = h5py.File(self.hfFile, 'r+')
+            try:
+                self.h5 = h5py.File(self.hfFile, 'r+')
+            except BlockingIOError as ex:
+                """
+                [Errno 11] Unable to open file
+                (unable to lock file, errno = 11,
+                error message = 'Resource temporarily
+                unavailable')
+                """
+                dbgPrint(f"File busy")
+                time.sleep(0.001)
+                try:
+                    self.h5 = h5py.File(self.hfFile, 'r+')
+                except BlockingIOError as ex:
+                    dbgPrint(f"File still busy")
         return self.h5 != None
 
     def h5Close(self):
