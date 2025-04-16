@@ -157,6 +157,7 @@ class h5Reader:
         self.h5 = None
         self.deleteAfter = deleteAfter
         self.scripts_path = os.path.dirname(__file__)
+        self.parsedH5 = []
         if not hfRelPath == "":
             # relative path
             self.hdf5_path = os.path.join(self.scripts_path, hfRelPath, "")
@@ -230,13 +231,17 @@ class h5Reader:
                 # file is not ready
                 continue
 
+            # Reduce list to 5 files to save memory when not deleting after reading
+            if len(self.parsedH5) > 5 and not self.deleteAfter:
+                self.parsedH5 = self.parsedH5[-5:]
+
             # for each file in order, check if file is not empty
             if (os.path.getsize(pathName) > 0):
                 # check if file has already been written to
-                if (pathName not in parsedH5):
+                if (pathName not in self.parsedH5):
                     # save filename to prevent reading it multiple times
                     #print(fileName)
-                    parsedH5.append(pathName)
+                    self.parsedH5.append(pathName)
                     return pathName
         # no new file to parse
         return ""
@@ -255,7 +260,7 @@ class h5Reader:
         self.hfFile = self.getLastH5()
 
         while self.hfFile == "" and time.time() - start_time < timeout_sec :
-            time.sleep(1)
+            time.sleep(0.001)
             self.hfFile = self.getLastH5()
 
         return self.hfFile

@@ -68,6 +68,8 @@ from tkinter.filedialog import asksaveasfilename
 import matplotlib # for get_backend()
 import matplotlib.backends as backends
 
+import threading
+
 # custom modules
 from modules.fgColors import fgColors
 from modules.zynqEnvHelper import PROJECT_PATH, HOST_APPS_PATH, USER_DATA_DIR, HDF5_DATA_DIR
@@ -718,6 +720,26 @@ def customizeMenu(fig):
 # -----------------------------------------------
 # --- Settings for the analysis
 # -----------------------------------------------
+
+def parse_files(dp: dsumPlotter):
+    db = h5Reader(deleteAfter=True, # Needs to be true to avoid reading same files in a loop
+                  hfAbsPath=HDF5_DATA_DIR,
+                  sysClkPrd=SYS_CLK_PRD,
+                  dsumPrd=DSUM_SAMPLE_NCLK,
+                  hfFile="")
+    while True:
+        db.waitForNewFile(timeout_sec=0.5)
+        # Update data if new file has been parsed
+        if db.newFileReady():
+            dp.getAllPdcData(db)
+            dp.updateAllData()
+            db.h5Close()
+
+        dp.checkExit()
+
+
+# Switch to disable running parsing in a separate thread from gui, like previous versions
+run_thread = True
 try:
     dp = dsumPlotter(figName="DSUM PLOTTER",
                      nPdcMax=N_PDC_MAX,
@@ -725,33 +747,40 @@ try:
                      integrate=DEFAULT_INTEGRATE)
     customizeMenu(dp.fig)
 
+    # Start acquisition thread
+    if run_thread:
+        thread_parse = threading.Thread(target=parse_files, args=[dp])
+        thread_parse.start()
+
     while 1:
         # loop until user Ctrl+C
-        db = h5Reader(  deleteAfter=True,
-                        #hfRelPath="HDF5",
-                        hfAbsPath=HDF5_DATA_DIR,
-                        sysClkPrd=SYS_CLK_PRD,
-                        dsumPrd=DSUM_SAMPLE_NCLK,
-                        hfFile="")
+        if not run_thread:
+            db = h5Reader(deleteAfter=True,
+                          #hfRelPath="HDF5",
+                          hfAbsPath=HDF5_DATA_DIR,
+                          sysClkPrd=SYS_CLK_PRD,
+                          dsumPrd=DSUM_SAMPLE_NCLK,
+                          hfFile="")
 
-        # nothing new to plot
-        if not db.newFileReady():
-            #checkExit(figure_name)
-            #plotPause(fig, 0.01)
-            dp.checkExit()
-            dp.pausePlot(pauseTime=0.01)
-            continue
 
-        # -----------------------------------------------
-        # --- Open HDF5 file to get Controller Data
-        # -----------------------------------------------
-        # get all PDC data for a given event in db
-        dp.getAllPdcData(db=db)
+            # nothing new to plot
+            if not db.newFileReady():
+                #checkExit(figure_name)
+                #plotPause(fig, 0.01)
+                dp.checkExit()
+                dp.pausePlot(pauseTime=0.01)
+                continue
 
-        # -----------------------------------------------
-        # --- Plot content
-        # -----------------------------------------------
-        dp.updateAllData()
+            # -----------------------------------------------
+            # --- Open HDF5 file to get Controller Data
+            # -----------------------------------------------
+            # get all PDC data for a given event in db
+            dp.getAllPdcData(db=db)
+
+            # -----------------------------------------------
+            # --- Plot content
+            # -----------------------------------------------
+            dp.updateAllData()
 
         # check if figure still exist
         dp.checkExit()
