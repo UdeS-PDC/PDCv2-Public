@@ -14,6 +14,7 @@
 import os, sys
 from pathlib import Path
 import time
+from time import sleep as timeSleep
 import pandas as pd
 import h5py
 import numpy as np
@@ -260,7 +261,7 @@ class h5Reader:
         self.hfFile = self.getLastH5()
 
         while self.hfFile == "" and time.time() - start_time < timeout_sec :
-            time.sleep(0.001)
+            timeSleep(0.001)
             self.hfFile = self.getLastH5()
 
         return self.hfFile
@@ -282,11 +283,12 @@ class h5Reader:
                 unavailable')
                 """
                 dbgPrint(f"File busy")
-                time.sleep(0.001)
+                timeSleep(0.001)
                 try:
                     self.h5 = h5py.File(self.hfFile, 'r+')
                 except BlockingIOError as ex:
                     dbgPrint(f"File still busy")
+                    self.h5 = None # make sure it is still set to None
         return self.h5 != None
 
     def h5Close(self):
@@ -308,7 +310,8 @@ class h5Reader:
         if not previously set
         """
         if not self.HDF_TRANSMIT:
-            self.HDF_TRANSMIT = self.h5.get('TRANSMIT/')
+            if type(self.h5) != type(None):
+                self.HDF_TRANSMIT = self.h5.get('TRANSMIT/')
         if self.HDF_TRANSMIT and not self.HDF_CTL:
             for key in self.HDF_TRANSMIT.keys():
                 if "CTL" in key:
@@ -325,7 +328,18 @@ class h5Reader:
             # no Controller in the file
             print(f"ERROR: no Controller found")
             return [None, None]
-        PDC_DSUM = self.HDF_CTL.get(f"PDC/PDC_{iPdc:02d}/PDC_DATA/DGTL_SUM/DGTL_SUM")
+        # default value if execution fails
+        PDC_DSUM = None
+        try:
+            PDC_DSUM = self.HDF_CTL.get(f"PDC/PDC_{iPdc:02d}/PDC_DATA/DGTL_SUM/DGTL_SUM")
+        except ValueError as ex:
+            dbgPrint("getDsumError: retrying")
+            timeSleep(0.001)
+            try:
+                PDC_DSUM = self.HDF_CTL.get(f"PDC/PDC_{iPdc:02d}/PDC_DATA/DGTL_SUM/DGTL_SUM")
+            except ValueError as ex:
+                dbgPrint("getDsumError: aborting")
+            
         if PDC_DSUM == None:
             #print(f"ERROR: no PDC DGTL_SUM found for PDC {iPdc}")
             return [None, None]
