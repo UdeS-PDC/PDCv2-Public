@@ -50,11 +50,12 @@ class zynqDataTransfer:
         # hex app
         #self.hexAppName = "dma2h5" # NOTE: soon to be replaced by hexRead
         self.hexAppName = "hexRead" # NOTE: soon to be replaced by hexRead
-        self.hexAppPath = ""       # NOTE: to be set in __getHexAppPath()
+        self.hexAppPath = ""       # NOTE: to be set in getHexAppPath()
         self.hexAppOutPathDefault = HDF5_DATA_DIR
         self.hexAppPidRemote = None # started by another application
         self.hexAppPidLocal = None  # started by this application
         self.hexAppPopen = None
+        self.hexInputPath = self.serverNfsDataPath # can be overwritten by getHexAppPath()
 
         # HDF5
         self.h5Path = None
@@ -89,7 +90,7 @@ class zynqDataTransfer:
         for item in self.__dict__:
             print(f"{item}={self.__dict__[item]}")
 
-    def __getHexAppPath(self):
+    def getHexAppPath(self):
         """
         try to find the path to hexApp, if not use a default value
         """
@@ -243,8 +244,65 @@ class zynqDataTransfer:
         return []
 
 
+    def getHexArgs(self):
+        """
+        get all arguments and options used to launch hex parser app (hexRead)
+        """
+        PID = self.__getHexAppPid()
+        if len(PID) == 1:
+            # a single PID, expected behaviour
+            try:
+                with os.popen(f"cat /proc/{PID[0]}/cmdline | sed -e 's|\\x00| |g'; echo") as hostCmd:
+                    hexAppArgs = hostCmd.read().split()
+                    return hexAppArgs
+            except Exception as ex:
+                # TBD better handling
+                return ""    
+        else:
+            # TBD error management
+            if len(PID) == 0:
+                print(f"{fgColors.red}ERROR: {self.hexAppName} app is not running on this machine.{fgColors.endc}")
+            else:
+                print(f"{fgColors.red}ERROR: {self.hexAppName} app is not running {len(PID)} times on this machine.{fgColors.endc}")
+        return ""
+
+
+    def getHexInputPath(self, verbose=True):
+        """
+        get hexApp input path for parsing .hex files
+        """
+        hexReadArgs = self.getHexArgs()
+        if ("-ipath" in hexReadArgs) or ("-i" in hexReadArgs):
+            ipath = ""
+            try:
+                ipathIdx = hexReadArgs.index('-i')
+                ipath = hexReadArgs[ipathIdx+1]
+            except ValueError:
+                try:
+                    ipathIdx = hexReadArgs.index('--ipath')
+                    ipath = hexReadArgs[ipathIdx+1]
+                except ValueError:
+                    print("{fgColors.red}ERROR: something wrong happened. {fgColors.endc}")
+                    ipathIdx = -1
+            if verbose and os.path.isdir(ipath):
+                print(f"hexRead read data from {ipath}")
+            self.hexInputPath = ipath
+
+    def doneParsingHex(self):
+        """
+        check if hexApp finished parsing .hex files
+        """
+        self.getHexInputPath(verbose=False)
+        nFiles = 0
+        for f in os.listdir(self.hexInputPath):
+            if f.endswith(".hex"):
+                nFiles += 1
+        return nFiles == 0
+
     def initHex(self, autoStart=False, printParsed=False, archive=False):
-        # hdf5 app
+        """
+        hdf5 app
+        """
         PID = self.__getHexAppPid()
         
         if len(PID) == 0:
@@ -253,7 +311,7 @@ class zynqDataTransfer:
                 if autoStart:
                     # running on NFS server, trying to start the app
                     # try to fing path to app
-                    self.__getHexAppPath()
+                    self.getHexAppPath()
                     print(f"{fgColors.bBlue}INFO: starting '{self.hexAppName}' to read from '{self.serverNfsDataPath}'.{fgColors.endc}")
                     archiveOption = ""
                     if archive:
@@ -301,6 +359,7 @@ class zynqDataTransfer:
             with os.popen(f"cat /proc/{PID[0]}/cmdline | sed -e 's|\\x00| |g'; echo") as hostCmd:
                 hexAppArgs = hostCmd.read().split()
             try:
+                # NOTE: fix this code for usage with --opath and make sure it is not specified from a module
                 outIdx = hexAppArgs.index('-o')+1
                 h5Path = hexAppArgs[outIdx]
                 if os.path.isdir(h5Path):
