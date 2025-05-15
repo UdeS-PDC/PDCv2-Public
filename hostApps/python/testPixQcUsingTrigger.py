@@ -322,9 +322,9 @@ class tcrPlotter:
         self.spadPop = [[] for iPdc in range(self.nPdcMax)]
 
         self.spadCumul100 = []
-        self.spadCumulHis = []
+        self.spadCumulPop = []
 
-        self.spadEn = [4096]*self.nPdcMax
+        self.spadEn = [self.nSpad]*self.nPdcMax
         self.spadDis = [0]*self.nPdcMax
 
         # plot constants
@@ -385,7 +385,7 @@ class tcrPlotter:
         # cumulative population of all PDCs
         self.lineCumulLabel = f"All PDCs"
         self.lineCumul = (self.axes.flat[self.axPop].plot(self.spadCumul100,
-                                                          self.spadCumulHis,
+                                                          self.spadCumulPop,
                                                           label=self.lineCumulLabel,
                                                           linewidth=2.0))[0]
         # statistics of the population
@@ -446,9 +446,6 @@ class tcrPlotter:
             else:
                 pdcRange = [iPdc]
 
-            # get value here, not thread safe, but it helps
-            idxMax = self.current_pixel_index
-
             for iPdc in pdcRange:
                 if not self.pdcValid[iPdc]:
                     # PDC is not valid, remove it from the legend
@@ -458,26 +455,28 @@ class tcrPlotter:
                 else:
                     # update scatter
                     self.hscatterTcr[iPdc].set_label(s=self.label[iPdc])
-                    self.hscatterTcr[iPdc].set_offsets(np.c_[self.spadIdx[:idxMax], self.spadTcr[iPdc][:idxMax]]) #
+                    scatterMax = min(len(self.spadIdx), len(self.spadTcr[iPdc])) # thread safe helper
+                    self.hscatterTcr[iPdc].set_offsets(np.c_[self.spadIdx[:scatterMax], self.spadTcr[iPdc][:scatterMax]]) #
 
                     # update histo
                     avg = np.mean(self.spadPop[iPdc])
                     med = statistics.median(self.spadPop[iPdc])
                     self.linePopu[iPdc].set_label(s=f"{self.label[iPdc]: <12} {avg: <12.1f} {med: <12.1f}")
-                    self.linePopu[iPdc].set_data(np.array(self.spad100[iPdc][:idxMax]),
-                                                np.array(self.spadPop[iPdc][:idxMax])) #
+                    popMax = min(len(self.spad100[iPdc]), len(self.spadPop[iPdc])) # thread safe helper
+                    self.linePopu[iPdc].set_data(np.array(self.spad100[iPdc][:popMax]),
+                                                np.array(self.spadPop[iPdc][:popMax])) #
 
             # cumul of all PDCs
-            avg = np.mean(self.spadCumulHis)
-            med = statistics.median(self.spadCumulHis)
+            avg = np.mean(self.spadCumulPop)
+            med = statistics.median(self.spadCumulPop)
             self.lineCumul.set_label(s=f"{self.lineCumulLabel: <12} {avg: <12.1f} {med: <12.1f}")
-            cumulIdx = min(len(self.spadCumul100), len(self.spadCumulHis)) # thread safe helper
+            cumulIdx = min(len(self.spadCumul100), len(self.spadCumulPop)) # thread safe helper
             self.lineCumul.set_data(np.array(self.spadCumul100[:cumulIdx]),
-                                    np.array(self.spadCumulHis[:cumulIdx])) #
+                                    np.array(self.spadCumulPop[:cumulIdx])) #
             # cumul stats lines
-            avgCumul = np.mean(self.spadCumulHis)
+            avgCumul = np.mean(self.spadCumulPop)
             self.lineCumulAvg.set_ydata([avgCumul, avgCumul])
-            medCumul = statistics.median(self.spadCumulHis)
+            medCumul = statistics.median(self.spadCumulPop)
             self.lineCumulMed.set_ydata([medCumul, medCumul])
 
             # set new limits
@@ -508,9 +507,9 @@ class tcrPlotter:
         self.spadPop[iPdc].sort()
         self.spad100[iPdc] = np.linspace(0, 100.0, len(self.spadPop[iPdc]))
 
-        self.spadCumulHis.append(avg)
-        self.spadCumulHis.sort()
-        self.spadCumul100 = np.linspace(0, 100.0, len(self.spadCumulHis))
+        self.spadCumulPop.append(avg)
+        self.spadCumulPop.sort()
+        self.spadCumul100 = np.linspace(0, 100.0, len(self.spadCumulPop))
 
         if avg != avgTh:
             # SPAD count is different than threshold
@@ -568,8 +567,9 @@ class tcrPlotter:
         check figure by name if it still exists
         """
         if not plt.fignum_exists(self.figName):
-            print("\nFigure closed: exit program")
-            sys.exit()
+            print("\nFigure closed...")
+            #sys.exit()
+            raise SystemExit
 
 
     def pausePlot(self, pauseTime=0.001):
@@ -661,10 +661,10 @@ def measTrgRate(iPix, measTime, numPdc):
 run_thread = True
 def test_all_pixels(tp: tcrPlotter, update=False):
     if type(tp) == type(None):
-        print(f"{fgColors.red}tcrPlotter object must be created first{fgColors.endc}")
+        print(f"{fgColors.red}ERROR: tcrPlotter object must be created first{fgColors.endc}")
         sys.exit()
 
-    # update data
+    # acquire data
     for iPix in range(0, icp.nSpad, pixStep):
         if not tp.run:
             break
@@ -733,14 +733,17 @@ try:
     print(f"{fgColors.bBlue}Test took {test_stop_time-test_start_time:.3f} seconds{fgColors.endc}")
     print(f"{fgColors.bBlue}Test completed, to exit, close figure{fgColors.endc}")
     plt.show(block=True)
-    print("\nFigure closed: exit program")
+    print("\nFigure closed... exit program")
 
-except KeyboardInterrupt:
+except (KeyboardInterrupt, SystemExit) as ex:
     if "tp" in locals():
         tp.run = False
     if "thread_test" in locals():
         thread_test.join()
-    print(f"\n{fgColors.yellow}Keyboard Interrupt: exit program{fgColors.endc}")
+    if isinstance(ex, KeyboardInterrupt):
+        print(f"\n{fgColors.yellow}Keyboard Interrupt: exit program{fgColors.endc}")
+    else:
+        print(f"\n{fgColors.yellow}Program interrupted: exit program{fgColors.endc}")
 
 finally:
     if not 'test_stop_time' in locals():

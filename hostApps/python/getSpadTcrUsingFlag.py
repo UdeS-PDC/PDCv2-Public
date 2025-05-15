@@ -28,12 +28,14 @@ import statistics
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import warnings
+import threading
 
 # custom modules
 from modules.fgColors import fgColors
 from modules.zynqEnvHelper import PROJECT_PATH, HOST_APPS_PATH, USER_DATA_DIR, HDF5_DATA_DIR
 import modules.sshClientHelper as sshClientHelper
 import modules.systemHelper as systemHelper
+import modules.pixMap as pixMap
 from modules.zynqCtlPdcRoutines import initCtlPdcFromClient, packetBank
 from modules.zynqDataTransfer import zynqDataTransfer
 from modules.systemHelper import sectionPrint
@@ -76,6 +78,7 @@ zynq.init()
 # --- prepare controller for acquisition
 # -----------------------------------------------
 icp = initCtlPdcFromClient(client=client, sysClkPrd=10e-9, pdcEn=0xF)
+
 
 # -----------------------------------------------
 # --- set system clock period
@@ -126,6 +129,13 @@ icp.setCfgRtnEn()
 # -----------------------------------------------
 icp.preparePDC()
 
+# -----------------------------------------------
+# --- Testing all the pixels,
+# --- 4096 for a complete 3D SPAD array
+# --- 64 for the embedded 2D CMOS SPADs
+# -----------------------------------------------
+icp.nSpad = 64
+
 
 # --------------------------
 # --- configure the PDCs ---
@@ -152,7 +162,7 @@ PDC_SETTING.PIXL = PIXL
 # === TIME REGISTER ===
 print("\n=== TIME REGISTER ===")
 HOLD_TIME = 150.0
-RECH_TIME = 4.0
+RECH_TIME = 10.0
 FLAG_TIME = 10.0
 client.runPrint(f"pdcTime --hold {HOLD_TIME} --rech {RECH_TIME} --flag {FLAG_TIME} -g")
 PDC_SETTING.TIME = client.runReturnSplitInt('pdcTime -g')
@@ -224,18 +234,26 @@ PDC_SETTING.print()
 # ---------------------------------------
 sectionPrint("configure Controller ZPP module")
 CLK_PRD = icp.sysClkPrd
+class ZppModuleSetMethod(IntEnum):
+    app=0,
+    registers=1
 
-print("  Configure ZPP Timer High Period")
-ZPP_HIGH_PRD=measTime # seconds
-ZPP_HIGH_REG=int(ZPP_HIGH_PRD/CLK_PRD)
-client.runPrint(f"ctlCfg -a ZPH0 -r 0x{ZPP_HIGH_REG&0xFFFF:04x} -g")
-client.runPrint(f"ctlCfg -a ZPH1 -r 0x{(ZPP_HIGH_REG>>16)&0xFFFF:04x} -g")
+ZppModuleSetMethod.app
+if method == ZppModuleSetMethod.app:
+    # new application available from 20250509 image
+    client.runPrint(f"set-ctl-zpp-prd {measTime}")
+elif method == ZppModuleSetMethod.registers:
+    print("  Configure ZPP Timer High Period")
+    ZPP_HIGH_PRD=measTime # seconds
+    ZPP_HIGH_REG=int(ZPP_HIGH_PRD/CLK_PRD)
+    client.runPrint(f"ctlCfg -a ZPH0 -r 0x{ZPP_HIGH_REG&0xFFFF:04x} -g")
+    client.runPrint(f"ctlCfg -a ZPH1 -r 0x{(ZPP_HIGH_REG>>16)&0xFFFF:04x} -g")
 
-print("  Configure ZPP Timer Low Period")
-ZPP_LOW_PRD=CLK_PRD
-ZPP_LOW_REG=int(ZPP_LOW_PRD/CLK_PRD)
-client.runPrint(f"ctlCfg -a ZPL0 -r 0x{ZPP_LOW_REG&0xFFFF:04x} -g")
-client.runPrint(f"ctlCfg -a ZPL1 -r 0x{(ZPP_LOW_REG>>16)&0xFFFF|0x8000:04x} -g")  # |0x8000 to enable ZPP
+    print("  Configure ZPP Timer Low Period")
+    ZPP_LOW_PRD=CLK_PRD
+    ZPP_LOW_REG=int(ZPP_LOW_PRD/CLK_PRD)
+    client.runPrint(f"ctlCfg -a ZPL0 -r 0x{ZPP_LOW_REG&0xFFFF:04x} -g")
+    client.runPrint(f"ctlCfg -a ZPL1 -r 0x{(ZPP_LOW_REG>>16)&0xFFFF|0x8000:04x} -g")  # |0x8000 to enable ZPP
 
 
 # ---------------------------------------
@@ -268,16 +286,24 @@ class tcrPlotter:
         # if PDc is enabled and gives valid data
         self.pdcValid = [False]*self.nPdcMax
 
+        # index of tested pixel
+        self.current_pixel_index = -1
+        self.done_test_all_pixels = False
+        self.run = True
+
         # data
+        self.pdcTcrAll = [0]*self.nPdcMax   # all pixels
+        self.pdcTcrNS = [0]*self.nPdcMax    # no screamers
         self.spadIdx = range(0, self.nSpad)
         self.spadTcr = [[0]*self.nSpad for iPdc in range(self.nPdcMax)]
         self.spad100 = [[] for iPdc in range(self.nPdcMax)]
         self.spadPop = [[] for iPdc in range(self.nPdcMax)]
 
         self.spadCumul100 = []
-        self.spadCumulHis = []
+        self.spadCumulPop = []
 
-        self.spadEn  = [0xFFFFFFFFFFFFFFFF]*self.nPdcMax
+        self.spadEn  = [[0]*self.nSpad for iPdc in range(self.nPdcMax)]
+        self.spadValid = [[False]*self.nSpad for iPdc in range(self.nPdcMax)]
 
         # plot constants
         self.axTcr = 0
@@ -337,7 +363,7 @@ class tcrPlotter:
         # cumulative population of all PDCs
         self.lineCumulLabel = f"All PDCs"
         self.lineCumul = (self.axes.flat[self.axPop].plot(self.spadCumul100,
-                                                          self.spadCumulHis,
+                                                          self.spadCumulPop,
                                                           label=self.lineCumulLabel,
                                                           linewidth=2.0))[0]
         # statistics of the population
@@ -364,8 +390,13 @@ class tcrPlotter:
             self.axes.flat[self.axPop].set_yscale('log')
 
         # scatter ticks
-        self.axes.flat[self.axTcr].set_xticks(np.arange(0, 65, 8))
-        self.axes.flat[self.axTcr].xaxis.set_minor_locator(mticker.MultipleLocator(1))
+        if self.nSpad <= 64:
+            self.axes.flat[self.axTcr].set_xticks(np.arange(0, 65, 8))
+            self.axes.flat[self.axTcr].xaxis.set_minor_locator(mticker.MultipleLocator(1))
+        else:
+            self.axes.flat[self.axTcr].set_xticks(np.arange(0, 4097, 500))
+            self.axes.flat[self.axTcr].set_xlim(-100, 4200)
+            self.axes.flat[self.axTcr].xaxis.set_minor_locator(mticker.MultipleLocator(100))
         self.axes.flat[self.axTcr].tick_params(which="both", direction="in", top=True, right=True)
 
         # population ticks
@@ -391,79 +422,170 @@ class tcrPlotter:
         """
         set new data on the plot without stealing the focus
         """
-        if iPdc == None:
-            pdcRange = range(self.nPdcMax)
-        else:
-            pdcRange = [iPdc]
-
-        for iPdc in pdcRange:
-            if not self.pdcValid[iPdc]:
-                # PDC is not valid, remove it from the legend
-                self.hscatterTcr[iPdc].set_label(s='')
-                self.linePopu[iPdc].set_label(s='')
-
+        if self.current_pixel_index >= 0:
+            if iPdc == None:
+                pdcRange = range(self.nPdcMax)
             else:
-                # update scatter
-                self.hscatterTcr[iPdc].set_label(s=self.label[iPdc])
-                self.hscatterTcr[iPdc].set_offsets(np.c_[self.spadIdx, self.spadTcr[iPdc]])
+                pdcRange = [iPdc]
 
-                # update histo
-                avg = np.mean(self.spadPop[iPdc])
-                med = statistics.median(self.spadPop[iPdc])
-                self.linePopu[iPdc].set_label(s=f"{self.label[iPdc]: <12} {avg: <12.1f} {med: <12.1f}")
-                self.linePopu[iPdc].set_data(np.array(self.spad100[iPdc]),
-                                            np.array(self.spadPop[iPdc]))
+            for iPdc in pdcRange:
+                if not self.pdcValid[iPdc]:
+                    # PDC is not valid, remove it from the legend
+                    self.hscatterTcr[iPdc].set_label(s='')
+                    self.linePopu[iPdc].set_label(s='')
 
-        # cumul of all PDCs
-        avg = np.mean(self.spadCumulHis)
-        med = statistics.median(self.spadCumulHis)
-        self.lineCumul.set_label(s=f"{self.lineCumulLabel: <12} {avg: <12.1f} {med: <12.1f}")
-        self.lineCumul.set_data(np.array(self.spadCumul100),
-                                np.array(self.spadCumulHis))
-        # cumul stats lines
-        avgCumul = np.mean(self.spadCumulHis)
-        self.lineCumulAvg.set_ydata([avgCumul, avgCumul])
-        medCumul = statistics.median(self.spadCumulHis)
-        self.lineCumulMed.set_ydata([medCumul, medCumul])
+                else:
+                    # update scatter
+                    self.hscatterTcr[iPdc].set_label(s=self.label[iPdc])
+                    scatterMax = min(len(self.spadIdx), len(self.spadTcr[iPdc])) # thread safe helper
+                    self.hscatterTcr[iPdc].set_offsets(np.c_[self.spadIdx[:scatterMax], self.spadTcr[iPdc][:scatterMax]]) #
 
-        # set new limits
-        set_lim(self.axes.flat[self.axTcr], self.spadTcr)
-        set_lim(self.axes.flat[self.axPop], self.spadPop)
+                    # update histo
+                    avg = np.mean(self.spadPop[iPdc])
+                    med = statistics.median(self.spadPop[iPdc])
+                    self.linePopu[iPdc].set_label(s=f"{self.label[iPdc]: <12} {avg: <12.1f} {med: <12.1f}")
+                    popMax = min(len(self.spad100[iPdc]), len(self.spadPop[iPdc])) # thread safe helper
+                    self.linePopu[iPdc].set_data(np.array(self.spad100[iPdc][:popMax]),
+                                                np.array(self.spadPop[iPdc][:popMax])) #
+
+            # cumul of all PDCs
+            avg = np.mean(self.spadCumulPop)
+            med = statistics.median(self.spadCumulPop)
+            self.lineCumul.set_label(s=f"{self.lineCumulLabel: <12} {avg: <12.1f} {med: <12.1f}")
+            cumulIdx = min(len(self.spadCumul100), len(self.spadCumulPop)) # thread safe helper
+            self.lineCumul.set_data(np.array(self.spadCumul100[:cumulIdx]),
+                                    np.array(self.spadCumulPop[:cumulIdx])) #
+            # cumul stats lines
+            avgCumul = np.mean(self.spadCumulPop)
+            self.lineCumulAvg.set_ydata([avgCumul, avgCumul])
+            medCumul = statistics.median(self.spadCumulPop)
+            self.lineCumulMed.set_ydata([medCumul, medCumul])
+
+            # set new limits
+            set_lim(self.axes.flat[self.axTcr], self.spadTcr)
+            set_lim(self.axes.flat[self.axPop], self.spadPop)
 
         self.updateLegend()
-        self.pausePlot(pauseTime=0.01)
+        self.pausePlot(pauseTime=0.001)
         self.savePlot(iPdc=iPdc)
         self.checkExit()
 
 
-    def newData(self, iPdc, iSpad, avg, avgTh):
+    def newData(self, iPdc, iSpad, avg):
         """
         add new data to the class
         """
         if avg < 0:
             # no valid data
             self.pdcValid[iPdc] = False
-            self.spadEn[iPdc] = 0
             return
         self.pdcValid[iPdc] = True
+        self.spadValid[iPdc][iSpad] = True
 
         # add only valid data
+        self.pdcTcrAll[iPdc] += avg
         self.spadTcr[iPdc][iSpad] = avg
         self.spadPop[iPdc].append(avg)
         self.spadPop[iPdc].sort()
         self.spad100[iPdc] = np.linspace(0, 100.0, len(self.spadPop[iPdc]))
 
-        self.spadCumulHis.append(avg)
-        self.spadCumulHis.sort()
-        self.spadCumul100 = np.linspace(0, 100.0, len(self.spadCumulHis))
+        self.spadCumulPop.append(avg)
+        self.spadCumulPop.sort()
+        self.spadCumul100 = np.linspace(0, 100.0, len(self.spadCumulPop))
 
-        if avg > avgTh:
-            # SPAD average count rate is higher than threshold
-            print(f"{fgColors.red}Disabling SPAD {iSpad} on PDC {iPdc}{fgColors.endc}")
-            self.spadEn[iPdc] ^= (0x1<<iSpad)
+
+    def countValidSpads(self, iPdc):
+        """
+        count the number of valid SPADs for a given PDC.
+        To be valid, a SPAD must have a ZPP packet associated to it.
+        """
+        return self.spadValid[iPdc].count(True)
+
+    def countEnabledSpads(self, iPdc):
+        """
+        return the number of enabled SPADs
+        """
+        return self.spadEn[iPdc].count(1)
+
+    def getPerSpadAvgTcr(self, iPdc, screamersEnabled=True):
+        """
+        get the average TCR per SPAD using total TCR
+        divided by the number of valid/enabled SPADs
+        """
+        if not self.pdcValid[iPdc]:
+            return 0
+        if screamersEnabled:
+            return self.pdcTcrAll[iPdc]/(1.0*self.countValidSpads(iPdc))
         else:
-            # SPAD average count rate is lower than threshold
-            self.spadEn[iPdc] |= (0x1<<iSpad)
+            return self.pdcTcrNS[iPdc]/(1.0*self.countEnabledSpads(iPdc))
+
+    def getSpadMedTcr(self, iPdc):
+        """
+        get the median TCR value
+        """
+        return statistics.median(self.spadTcr[iPdc])
+
+    def getClosestPctPop(self, iPdc, percent):
+        """
+        get the TCR value closest to the specified percentage in the population
+        """
+        lst = self.spad100[iPdc]
+        return self.spadPop[iPdc][min(range(len(lst)), key = lambda i: abs(lst[i]-percent))]
+
+    def getSpadEnFromThreshold(self, iPdc, threshold, methodStr="",
+                               doPrint=True, addToScatter=False):
+        """
+        From a given count rate threshold, detect if a SPAD must be enabled or not
+        """
+        self.pdcTcrNS[iPdc] = 0 # reset value
+        for iSpad in range(0, self.nSpad):
+            if self.spadValid[iPdc][iSpad] and self.spadTcr[iPdc][iSpad] <= threshold:
+                # smaller of equal to threshold, keep it enabled
+                self.spadEn[iPdc][iSpad] = 1
+                self.pdcTcrNS[iPdc] += self.spadTcr[iPdc][iSpad]
+            else:
+                # larger than threshold, disable it
+                self.spadEn[iPdc][iSpad] = 0
+
+        nSpadEnabled = self.countEnabledSpads(iPdc=iPdc)
+        nSpadDisabled = self.nSpad - nSpadEnabled
+        if doPrint:
+            print(f"  PDC {iPdc} disabled {nSpadDisabled} SPAD with threshold of {threshold:.01f} {methodStr}")
+
+        if addToScatter:
+            self.axes.flat[self.axTcr].plot((min(self.spadIdx), max(self.spadIdx)),
+                                             (threshold, threshold), "--",
+                                             color=self.colors[iPdc],
+                                             label=f"PDC{iPdc} th ({threshold})")
+
+        return nSpadEnabled, self.spadEn[iPdc]
+
+    def getSpadPattern(self, iPdc):
+        """
+        get an hexadecimal pattern to enable SPADs.
+        Works only for less then 64 SPADs with app pdcSpad.
+        """
+        pattern = 0;
+        if self.nSpad <= 64 and self.pdcValid[iPdc]:
+            for iSpad in range(0, self.nSpad):
+                if self.spadEn[iPdc][iSpad]:
+                    pattern += (0x1<<iSpad)
+        return pattern
+
+
+    def getSpadRegister(self, iPdc):
+        """
+        get a list of registers to enable SPADs.
+        """
+        registerList = [0]*256 # (4096 pixels / 16 bits registers)
+        if self.pdcValid[iPdc]:
+            for iSpad in range(0, self.nSpad):
+                if self.spadEn[iPdc][iSpad]:
+                    addr = int(np.floor(iSpad/16))
+                    registerList[addr] += (0x1<<(iSpad-16*addr))
+
+        return registerList
+
 
     def saveData(self):
         """
@@ -515,8 +637,9 @@ class tcrPlotter:
         check figure by name if it still exists
         """
         if not plt.fignum_exists(self.figName):
-            print("\nFigure closed: exit program")
-            sys.exit()
+            print("\nFigure closed...")
+            #sys.exit()
+            raise SystemExit
 
 
     def pausePlot(self, pauseTime=0.001):
@@ -563,7 +686,9 @@ def waitForH5File(timeOutSec=10):
                 print(f"{fgColors.red}ERROR: Timeout while waiting for HDF5 data ({timeOutSec} seconds){fgColors.endc}")
                 sys.exit()
 
-def measCntRate(spadEnPattern, measTime, numPdc):
+def measCntRate(measTime, numPdc,
+                spadRow=None, spadCol=None,
+                spadIndex=None):
     """
     measCntRate: send cmd and cfg to Controller and PDC to get the SPAD count rate
     1- enable spads based on 64 bits pattern given and return to acquisition mode
@@ -572,41 +697,111 @@ def measCntRate(spadEnPattern, measTime, numPdc):
     4- send a Controller data packet with ZPP data
     5- wait to receive the file, fetch the ZPP data and close the file
     """
-    if type(spadEnPattern) == int:
-        # single pattern value, same setting for everyone
-        N_SPAD = [bin(spadEnPattern).count("1")]*numPdc
-        client.runPrint(f"pdcSpad --pattern 0x{spadEnPattern:016x} --mode NONE")
+    if type(spadRow) != type(None) and type(spadRow) != type(None):
+        # pixel/SPAD specified by row and column
+        client.runPrint(f"pdcPix --dis --row {spadRow} --col {spadCol} --mode NONE")
+
+    elif type(spadIndex) != type(None):
+        # pixel/SPAD specified by index
+        client.runPrint(f"pdcPix --dis --index {spadIndex} --mode NONE")
+
     else:
-        # array of patterns
-        N_SPAD = [0]*numPdc
-        for iPdc in range(0, numPdc):
-            N_SPAD[iPdc] = bin(spadEnPattern[iPdc]).count("1")
-            client.runPrint(f"pdcSpad --pattern 0x{spadEnPattern[iPdc]:016x} --spdc {iPdc} --mode NONE")
+        # do not change pixels settings
+        print("pixel/SPAD not specified")
+
 
     # send commands to the Controller/PDC
-    client.runPrint("ctlCmd -c MODE_ACQ")
-    client.runPrint("ctlCmd -c RSTN_ZPP")
-    time.sleep(measTime)
-    client.runPrint("ctlCmd -c PACK_TRG_A")
+    client.runPrint("ctlCmd -c MODE_ACQ; " \
+                    "ctlCmd -c RSTN_ZPP; " \
+                    f"sleep {measTime:.06f}; " \
+                    "ctlCmd -c PACK_TRG_A; ")
 
     # wait for the HDF5 result file
     db = waitForH5File()
     db.h5Open()
 
     # get ZPP results
-    TOT_AVG = [-1]*numPdc
-    SPD_AVG = [-1]*numPdc
+    AVG = [-1]*numPdc
     for iPdc in range(0, numPdc):
         ZPP = db.getPdcZPP(iPdc=iPdc, zppSingle=PDC_ZPP_ITEM.AVG)
-        if (ZPP != None) and (ZPP.AVG != -1 and N_SPAD[iPdc] > 0):
+        if (ZPP != None) and (ZPP.AVG != -1):
             # use ZPP value and normalize count rate to 1 sec to have cps
-            TOT_AVG[iPdc] = ZPP.AVG / measTime
-            SPD_AVG[iPdc] = TOT_AVG[iPdc]/N_SPAD[iPdc]
-            print(f"  PDC {iPdc} TCR = {TOT_AVG[iPdc]}, per SPAD AVG = {SPD_AVG[iPdc]:.1f}")
+            AVG[iPdc] = ZPP.AVG / measTime
+            print(f"  PDC {iPdc} TCR = {AVG[iPdc]}")
 
     db.h5Close()
 
-    return [TOT_AVG, SPD_AVG]
+    return AVG
+
+
+# ---------------------------------------
+# --- data acquisition as a thread
+# ---------------------------------------
+class LoopingMethod(IntEnum):
+    rows_cols=1,
+    index=2,
+
+def test_all_pixels(tp: tcrPlotter, update=False):
+    if type(tp) == type(None):
+        print(f"{fgColors.red}tcrPlotter object must be created first{fgColors.endc}")
+        sys.exit()
+
+    # acquire data
+    if icp.nSpad == 4096:
+        # testing a full array
+        rows = range(0, 64)
+        cols = range(0, 64)
+        lMethod = LoopingMethod.rows_cols
+
+    elif icp.nSpad == 64:
+        # testing only 2D CMOS SPADs
+        rows = [63]
+        cols = range(0, icp.nSpad)
+        lMethod = LoopingMethod.rows_cols
+    else:
+        # testing based on index (fallback case, should not be used)
+        rows = [0]
+        cols = range(0, icp.nSpad)
+        lMethod = LoopingMethod.index
+
+    for iRow in rows:
+        for iCol in cols:
+            if not tp.run:
+                break
+            if lMethod == LoopingMethod.index:
+                spadIndex = iCol
+                spadRow = None
+                spadCol = None
+                iSpad = spadIndex
+            elif lMethod == LoopingMethod.rows_cols:
+                spadIndex = None
+                spadRow = iRow
+                spadCol = iCol
+                if icp.nSpad == 4096:
+                    iSpad = pixMap.idx_map(y=spadRow, x=spadCol)
+                else:
+                    iSpad = iCol
+            # enable the proper pixels and measure the total countrate
+            AVG_TCR = measCntRate(spadIndex=spadIndex,
+                                  spadRow=spadRow,
+                                  spadCol=spadCol,
+                                  measTime=measTime,
+                                  numPdc=icp.nPdcMax)
+
+            # add new data for each PDC
+            for iPdc in range(0, icp.nPdcMax):
+                # put new data into data object
+                tp.newData(iPdc=iPdc,
+                           iSpad=iSpad,
+                           avg=AVG_TCR[iPdc])
+
+            tp.current_pixel_index = iSpad
+
+            if update:
+                tp.updatePlot()
+
+    # indicate all tests are completed
+    tp.done_test_all_pixels = True
 
 # ---------------------------------------
 # --- Script main execution
@@ -627,59 +822,158 @@ try:
     # ---------------------------------------
     # --- SPAD count rate logic
     # ---------------------------------------
-    # 1 - enable all pixels and get count rate
-    sectionPrint("SPAD count rate for all SPADs enabled")
-    spadEnPattern = 0xFFFFFFFFFFFFFFFF
-    TOT_AVG, SPD_AVG = measCntRate(spadEnPattern=spadEnPattern,
-                                   measTime=measTime,
-                                   numPdc=icp.nPdcMax)
+    # 1 - loop for each SPAD to measure its TCR
+    sectionPrint("Loop for each SPAD to measure its TCR")
+    run_thread = True
+    if run_thread:
+        # running as a thread
+        thread_test = threading.Thread(target=test_all_pixels, args=[tp])
+        thread_test.start()
 
-    # 2 - loop for each SPAD to get its TCR and list spad to disable
-    sectionPrint("SPAD count rate for one SPAD at the time")
-    for iSPAD in range(0, icp.nSpad):
-        spadEnPattern = 0x1<<iSPAD
-        TOT_AVG1, SPD_AVG1 = measCntRate(spadEnPattern=spadEnPattern,
-                                         measTime=measTime,
-                                         numPdc=icp.nPdcMax)
-        for iPdc in range(0, icp.nPdcMax):
-            # put new data into data object
-            # NOTE: using the average of all SPAD enabled divided by N SPAD,
-            # to get a threshold to select which SPADs to use
-            tp.newData(iPdc=iPdc, iSpad=iSPAD,
-                       avg=SPD_AVG1[iPdc], avgTh=SPD_AVG[iPdc])
-
-            # update plot (using updatePlot here will update for each PDC)
-            # It takes test time on each plot update
-            #tp.updatePlot(iPdc=iPdc)
-
-        # update plot (once per measure for all the PDCs)
+        while not tp.done_test_all_pixels:
+            tp.updatePlot()
+        # update a last time
         tp.updatePlot()
 
-    # 3- list the SPAD to use based on the specified condition
-    sectionPrint("SPAD to use based on the specified condition")
-    for iPdc in range(0, icp.nPdcMax):
-        N_SPAD = bin(tp.spadEn[iPdc]).count("1")
-        print(f"PDC {iPdc} enabled SPAD are 0x{tp.spadEn[iPdc]:016x} ({N_SPAD} SPAD)")
+    else:
+        test_all_pixels(tp=tp, update=True)
 
-    # 4 - get count rate with screamers turned off
-    sectionPrint("SPAD count rate with screamers turned off")
-    TOT_AVG_end, SPD_AVG_end = measCntRate(spadEnPattern=tp.spadEn,
-                                           measTime=measTime,
-                                           numPdc=icp.nPdcMax)
+    # 2- estimate the TCR of the array with all pixels enabled
+    sectionPrint("Estimate the TCR of the array (all pixels)")
+    # NOTE: This estimation does not consider that the TCR is obtained with the flag.
+    #       If the SPADs TCR is too high, the flag will underestimate the TCR (pixels overlap)
+    for iPdc in range(0, icp.nPdcMax):
+        if tp.pdcValid[iPdc]:
+            nSpad = tp.countValidSpads(iPdc)
+            print(f"  PDC {iPdc} total TCR = {tp.pdcTcrAll[iPdc]: <8} " \
+                  f"({tp.getPerSpadAvgTcr(iPdc): <8.01f} per SPAD for {nSpad} SPADs)")
+
+    # 3- identify the screamer pixels
+    sectionPrint("Identify the screamer pixels")
+    # NOTE: Select here a method to identify the screamers.
+    class ScreamerMethod(IntEnum):
+        threshold=0,
+        average=1,
+        percent=2,
+        medianFactor=3,
+        medianToMin=4
+
+    # store all tested threshold methods to later select the one to use
+    thresholdList = [[0]*len(ScreamerMethod) for _ in range(0, icp.nPdcMax)]
+
+    for iPdc in range(0, icp.nPdcMax):
+        if not tp.pdcValid[iPdc]:
+            continue
+
+        # enable/disable the pixels based on a fixed threshold
+        # NOTE: change threshold to be more or less selective
+        thresholdList[ScreamerMethod.threshold][iPdc] = 400
+        nSpadEnabled, spadEnabled = \
+            tp.getSpadEnFromThreshold(  iPdc,
+                                        threshold=thresholdList[ScreamerMethod.threshold][iPdc],
+                                        methodStr="(fixed)")
+
+        # enable/disable the pixels based on the average
+        thresholdList[ScreamerMethod.average][iPdc] = tp.getPerSpadAvgTcr(iPdc)
+        nSpadEnabled, spadEnabled = \
+            tp.getSpadEnFromThreshold(  iPdc,
+                                        threshold=thresholdList[ScreamerMethod.average][iPdc],
+                                        methodStr="(average)")
+
+        # enable/disable the pixels based on the percentage of the population
+        # NOTE: change threshold to be more or less selective
+        percent = 90
+        thresholdList[ScreamerMethod.percent][iPdc] = tp.getClosestPctPop(iPdc, percent=percent)
+        nSpadEnabled, spadEnabled = \
+            tp.getSpadEnFromThreshold(  iPdc,
+                                        threshold=thresholdList[ScreamerMethod.percent][iPdc],
+                                        methodStr=f"({percent}%)")
+
+        # enable/disable the pixels based on a factor to the median
+        # NOTE: change factor to be more or less selective
+        factor = 1.5
+        thresholdList[ScreamerMethod.medianFactor][iPdc] = tp.getSpadMedTcr(iPdc)*factor
+        nSpadEnabled, spadEnabled = \
+            tp.getSpadEnFromThreshold(  iPdc,
+                                        threshold=thresholdList[ScreamerMethod.medianFactor][iPdc],
+                                        methodStr="(factor to median)")
+
+        # enable/disable the pixels based on the distance from min to the median
+        # NOTE: (median + (median - min)) = 2*median - min
+        median = tp.getSpadMedTcr(iPdc)
+        thresholdList[ScreamerMethod.medianToMin][iPdc] = 2.0*median-min(tp.spadTcr[iPdc])
+        nSpadEnabled, spadEnabled = \
+            tp.getSpadEnFromThreshold(  iPdc,
+                                        threshold=thresholdList[ScreamerMethod.medianToMin][iPdc],
+                                        methodStr="(distance from median to min)")
+        print("")
+
+    # 4- estimate the TCR of the array with the screamers pixels disabled
+    sectionPrint("Estimate the TCR of the array (no screamers)")
+    # NOTE: change here the method to use
+    method = ScreamerMethod.percent
+    print(f"selected method is {method.name}")
+
+    # estimate the TCR using the given parameters
+    for iPdc in range(0, icp.nPdcMax):
+        if not tp.pdcValid[iPdc]:
+            continue
+        threshold = thresholdList[method][iPdc]
+        nSpadEnabled, spadEnabled = \
+                tp.getSpadEnFromThreshold(  iPdc,
+                                            threshold=threshold,
+                                            methodStr=method.name,
+                                            addToScatter=True,
+                                            doPrint=False)
+
+        nSpad = tp.countEnabledSpads(iPdc)
+        print(f"  PDC {iPdc} total TCR = {tp.pdcTcrNS[iPdc]: <8} " \
+                f"({tp.getPerSpadAvgTcr(iPdc, False): <8.01f} per SPAD for {nSpad} SPADs at threshold = {threshold})")
+
+    # refresh plot with selected thresholds
+    tp.updateLegend()
+    tp.pausePlot(pauseTime=0.001)
+
+    # 5- enable the selected SPADs
+    sectionPrint("Enable the selected SPADs")
+    for iPdc in range(0, icp.nPdcMax*0+1):
+        if not tp.pdcValid[iPdc]:
+            continue
+        # enable only the selected SPADs and print command (to copy to another script)
+        if tp.nSpad <= 64:
+            # for less than or 64 SPADs (here the embedded 2D CMOS SPADs), use a pattern
+            pdcSpadCmd = f"pdcSpad --dis --pattern 0x{tp.getSpadPattern(iPdc):016x} --spdc {iPdc} --mode NONE"
+            client.runPrint(pdcSpadCmd)
+        else:
+            # for more than 64 SPADs (here the 3D SPADs), specify each register to enable
+            registerList = tp.getSpadRegister(iPdc)
+            pdcSpadDisCmd = f"pdcPix --dis --spdc {iPdc} --mode NONE"
+            client.runPrint(pdcSpadDisCmd)
+            for addr, register in enumerate(registerList):
+                if register != 0:
+                    # skippeing empty registers since previously disabled all the SPADs
+                    pdcSpadCmd = f"pdcPix --addr {addr} --reg 0x{register:04x} --spdc {iPdc} --mode NONE"
+                    client.runPrint(pdcSpadCmd)
 
     # export data
     tp.saveData()
-
 
     # total execution time
     test_stop_time = time.time()
     print(f"{fgColors.bBlue}Test took {test_stop_time-test_start_time:.3f} seconds{fgColors.endc}")
     print(f"{fgColors.bBlue}Test completed, to exit, close figure{fgColors.endc}")
     plt.show(block=True)
-    print("\nFigure closed: exit program")
+    print("\nFigure closed... exit program")
 
-except KeyboardInterrupt:
-    print("\nKeyboard Interrupt: exit program")
+except (KeyboardInterrupt, SystemExit) as ex:
+    if "tp" in locals():
+        tp.run = False
+    if "thread_test" in locals():
+        thread_test.join()
+    if isinstance(ex, KeyboardInterrupt):
+        print(f"\n{fgColors.yellow}Keyboard Interrupt: exit program{fgColors.endc}")
+    else:
+        print(f"\n{fgColors.yellow}Program interrupted: exit program{fgColors.endc}")
 
 finally:
     if not 'test_stop_time' in locals():

@@ -173,6 +173,7 @@ class dsumPlotter:
         """
         create empty object with no data, but figure properly formatted
         """
+        self.run = True
         self.figName = figName
         self.nPdcMax = nPdcMax
         self.autofit = autofit
@@ -426,8 +427,9 @@ class dsumPlotter:
         check figure by name if it still exists
         """
         if not plt.fignum_exists(self.figName):
-            print("\nFigure closed: exit program")
-            sys.exit()
+            print("\nFigure closed...")
+            #sys.exit()
+            raise SystemExit
 
     def pausePlot(self, pauseTime=0.001):
         """
@@ -717,17 +719,17 @@ def customizeMenu(fig):
     fig.canvas.manager.toolbar.add_tool('download', 'save', 0)
     fig.canvas.manager.toolbar.add_tool('clear', 'clear', 0)
 
-# -----------------------------------------------
-# --- Settings for the analysis
-# -----------------------------------------------
 
+# ---------------------------------------
+# --- data acquisition as a thread
+# ---------------------------------------
 def parse_files(dp: dsumPlotter):
     db = h5Reader(deleteAfter=True, # Needs to be true to avoid reading same files in a loop
                   hfAbsPath=HDF5_DATA_DIR,
                   sysClkPrd=SYS_CLK_PRD,
                   dsumPrd=DSUM_SAMPLE_NCLK,
                   hfFile="")
-    while True:
+    while dp.run:
         db.waitForNewFile(timeout_sec=0.5)
         # Update data if new file has been parsed
         if db.newFileReady():
@@ -735,10 +737,11 @@ def parse_files(dp: dsumPlotter):
             dp.updateAllData()
             db.h5Close()
 
-        dp.checkExit()
 
-
-# Switch to disable running parsing in a separate thread from gui, like previous versions
+# ---------------------------------------
+# --- Script main execution
+# ---------------------------------------
+# Switch to disable running parsing in a separate thread from gui
 run_thread = True
 try:
     dp = dsumPlotter(figName="DSUM PLOTTER",
@@ -789,7 +792,14 @@ try:
         dp.pausePlot(pauseTime=0.001)
 
 
-except KeyboardInterrupt:
-    print("\nKeyboard Interrupt: exit program")
+except (KeyboardInterrupt, SystemExit) as ex:
+    if "dp" in locals():
+        dp.run = False
+    if "thread_parse" in locals():
+        thread_parse.join()
+    if isinstance(ex, KeyboardInterrupt):
+        print(f"\n{fgColors.yellow}Keyboard Interrupt: exit program{fgColors.endc}")
+    else:
+        print(f"\n{fgColors.yellow}Program interrupted: exit program{fgColors.endc}")
     sys.exit()
 

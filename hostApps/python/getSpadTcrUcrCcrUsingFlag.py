@@ -35,6 +35,7 @@ import statistics
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import warnings
+import threading
 
 # custom modules
 from modules.fgColors import fgColors
@@ -66,7 +67,7 @@ zp = None
 # time to wait for each setting
 measTime = 0.1  # second
 
-nZppCycles = 1000 # number of zpp cycles to get data
+nZppCycles = 5000 # number of zpp cycles to get data
 
 # -----------------------------------------------
 # --- open a connection with the ZCU102 board
@@ -168,6 +169,7 @@ PDC_SETTING.PIXL = PIXL
 
 # === TIME REGISTER ===
 print("\n=== TIME REGISTER ===")
+# NOTE: use a shorter hold-off to get a better estimate of the afterpulse (CCR)
 HOLD_TIME = 15.0
 RECH_TIME = 4.0
 FLAG_TIME = 2.0
@@ -240,20 +242,28 @@ PDC_SETTING.print()
 # --- configure Controller ZPP module ---
 # ---------------------------------------
 sectionPrint("configure Controller ZPP module")
+class ZppModuleSetMethod(IntEnum):
+    app=0,
+    registers=1
+
 def setZppModule(lclient, sysClkPrdSec, onTimeSec, offTimeSec):
     CLK_PRD=sysClkPrdSec
 
-    print("  Configure ZPP Timer High Period")
-    ZPP_HIGH_PRD=onTimeSec
-    ZPP_HIGH_REG=int(ZPP_HIGH_PRD/CLK_PRD)
-    lclient.runPrint(f"ctlCfg -a ZPH0 -r 0x{ZPP_HIGH_REG&0xFFFF:04x} -g")
-    lclient.runPrint(f"ctlCfg -a ZPH1 -r 0x{(ZPP_HIGH_REG>>16)&0xFFFF:04x} -g")
+    method = ZppModuleSetMethod.app
+    if method == ZppModuleSetMethod.app:
+        lclient.runPrint(f"set-ctl-zpp-prd {onTimeSec} {offTimeSec}")
+    elif method == ZppModuleSetMethod.registers:
+        print("  Configure ZPP Timer High Period")
+        ZPP_HIGH_PRD=onTimeSec
+        ZPP_HIGH_REG=int(ZPP_HIGH_PRD/CLK_PRD)
+        lclient.runPrint(f"ctlCfg -a ZPH0 -r 0x{ZPP_HIGH_REG&0xFFFF:04x} -g")
+        lclient.runPrint(f"ctlCfg -a ZPH1 -r 0x{(ZPP_HIGH_REG>>16)&0xFFFF:04x} -g")
 
-    print("  Configure ZPP Timer Low Period")
-    ZPP_LOW_PRD=offTimeSec
-    ZPP_LOW_REG=int(ZPP_LOW_PRD/CLK_PRD)
-    lclient.runPrint(f"ctlCfg -a ZPL0 -r 0x{ZPP_LOW_REG&0xFFFF:04x} -g")
-    lclient.runPrint(f"ctlCfg -a ZPL1 -r 0x{(ZPP_LOW_REG>>16)&0xFFFF|0x8000:04x} -g")  # |0x8000 to enable ZPP
+        print("  Configure ZPP Timer Low Period")
+        ZPP_LOW_PRD=offTimeSec
+        ZPP_LOW_REG=int(ZPP_LOW_PRD/CLK_PRD)
+        lclient.runPrint(f"ctlCfg -a ZPL0 -r 0x{ZPP_LOW_REG&0xFFFF:04x} -g")
+        lclient.runPrint(f"ctlCfg -a ZPL1 -r 0x{(ZPP_LOW_REG>>16)&0xFFFF|0x8000:04x} -g")  # |0x8000 to enable ZPP
 
 # set ZPP module to 1 sec to get average countrate per PDC to start
 setZppModule(client,
@@ -291,6 +301,11 @@ class zppPlotter:
         # if PDc is enabled and gives valid data
         self.pdcValid = [False]*self.nPdcMax
         self.pdcValidPrev = [False]*self.nPdcMax # detect when pdcValid change to update legend
+
+        # index of tested pixel
+        self.current_pixel_index = -1
+        self.done_test_all_pixels = False
+        self.run = True
 
         # data
         self.zpp = [[PDC_ZPP()]*self.nSpad for iPdc in range(self.nPdcMax)]
@@ -478,22 +493,23 @@ class zppPlotter:
         set new data on the plot without stealing the focus
         """
         # set new data
-        for iPdc in range(self.nPdcMax):
-            self.updateLabel(iPdc=iPdc)
-            if self.pdcValid[iPdc]:
-                # PDC is valid, add it to the legend
-                self.lineTCR[iPdc].set_ydata(self.getTCR(iPdc, getSpad=False))
-                self.lineUCR[iPdc].set_ydata(self.getUCR(iPdc, getSpad=False))
-                self.lineCCR[iPdc].set_ydata(self.getCCR(iPdc, getSpad=False))
+        if self.current_pixel_index >= 0:
+            for iPdc in range(self.nPdcMax):
+                self.updateLabel(iPdc=iPdc)
+                if self.pdcValid[iPdc]:
+                    # PDC is valid, add it to the legend
+                    self.lineTCR[iPdc].set_ydata(self.getTCR(iPdc, getSpad=False))
+                    self.lineUCR[iPdc].set_ydata(self.getUCR(iPdc, getSpad=False))
+                    self.lineCCR[iPdc].set_ydata(self.getCCR(iPdc, getSpad=False))
 
-        # set TCR and UCR on the same scale
-        TCR_ALL = self.flattenAllPDcs(self.getTCR)
-        UCR_ALL = self.flattenAllPDcs(self.getUCR)
-        CCR_ALL = self.flattenAllPDcs(self.getCCR)
-        TCR_UCR_ALL = TCR_ALL + UCR_ALL # used to get the maximum value of UCR or TCR and use it to scale axis
-        set_lim(self.axes.flat[self.axTCR], TCR_UCR_ALL)
-        set_lim(self.axes.flat[self.axUCR], TCR_UCR_ALL)
-        set_lim(self.axes.flat[self.axCCR], CCR_ALL)
+            # set TCR and UCR on the same scale
+            TCR_ALL = self.flattenAllPDcs(self.getTCR)
+            UCR_ALL = self.flattenAllPDcs(self.getUCR)
+            CCR_ALL = self.flattenAllPDcs(self.getCCR)
+            TCR_UCR_ALL = TCR_ALL + UCR_ALL # used to get the maximum value of UCR or TCR and use it to scale axis
+            set_lim(self.axes.flat[self.axTCR], TCR_UCR_ALL)
+            set_lim(self.axes.flat[self.axUCR], TCR_UCR_ALL)
+            set_lim(self.axes.flat[self.axCCR], CCR_ALL)
 
         self.updateLegend()
         self.pausePlot(pauseTime=0.001)
@@ -577,8 +593,9 @@ class zppPlotter:
         check figure by name if it still exists
         """
         if not plt.fignum_exists(self.figName):
-            print("\nFigure closed: exit program")
-            sys.exit()
+            print("\nFigure closed...")
+            #sys.exit()
+            raise SystemExit
 
 
     def pausePlot(self, pauseTime=0.001):
@@ -606,6 +623,9 @@ def set_lim(ax, data):
 # --- Function to get ZPP of each PDC from h5 file
 # --------------------------------------------------
 def waitForH5File(timeOutSec=10):
+    """
+    function to wait for a new HDF5 file
+    """
     t0 = datetime.datetime.now()
     while 1:
         db = h5Reader(deleteAfter=True,
@@ -620,7 +640,9 @@ def waitForH5File(timeOutSec=10):
                 sys.exit()
 
 def getZppOptimalPeriod(allPdcsZppData, nSpad):
-    # 2 - get the average TCR for all PDCs to set the ZPP module
+    """
+    get the average TCR for all PDCs to set the ZPP module period
+    """
     avgTcrAll = 0
     nb = 0
     for zpp in allPdcsZppData:
@@ -637,7 +659,7 @@ def getZppOptimalPeriod(allPdcsZppData, nSpad):
     print(f"{fgColors.blue}Average total count rate over {nb} PDCs is {avgTcrAll:.1f} for {nSpad} SPADs.{fgColors.endc}")
     avgPrd1Spad = avgPrdAll*nSpad
     print(f"{fgColors.blue}Average period per SPAD is {avgPrd1Spad:.3E}{fgColors.endc}")
-    zppPrd = avgPrd1Spad/2.0
+    zppPrd = avgPrd1Spad/5.0 # /2.0 TBD
     print(f"{fgColors.blue}Using ZPP period of {zppPrd:.3E}{fgColors.endc}")
     return zppPrd
 
@@ -658,11 +680,10 @@ def measCntRate(spadEnPattern, measTime, printTcrOnly=False):
             N_SPAD[iPdc] = bin(spadEnPattern[iPdc]).count("1")
             client.runPrint(f"pdcSpad --pattern 0x{spadEnPattern[iPdc]:016x} --spdc {iPdc} --mode NONE")
 
-    client.runPrint("ctlCmd -c MODE_ACQ")
-    client.runPrint("ctlCmd -c RSTN_ZPP")
-    #time.sleep(measTime)
-    zp.pausePlot(pauseTime=measTime)
-    client.runPrint("ctlCmd -c PACK_TRG_A")
+    client.runPrint("ctlCmd -c MODE_ACQ; " \
+                    "ctlCmd -c RSTN_ZPP; " \
+                    f"sleep {measTime:.06f}; " \
+                    "ctlCmd -c PACK_TRG_A; ")
 
     # wait for the HDF5 result file
     db = waitForH5File()
@@ -685,24 +706,13 @@ def measCntRate(spadEnPattern, measTime, printTcrOnly=False):
 
     return ZPP
 
-
-
-try:
-    # ---------------------------------------
-    # --- Object to hold the plots
-    # ---------------------------------------
-    # doSavePlot will save the plot at each measure.
-    # It will then increase the test time.
-    # Use it only to generate a .gif of the measures
-    zp = zppPlotter(figName="ZPP PLOTTER",
-                    nPdcMax=icp.nPdcMax,
-                    nSpad=icp.nSpad,
-                    doSavePlot=False)
-
-    # ---------------------------------------
-    # --- SPAD count rate logic
-    # ---------------------------------------
-    sectionPrint("SPAD count rate logic")
+# ---------------------------------------
+# --- data acquisition as a thread
+# ---------------------------------------
+def test_all_pixels(zp: zppPlotter, update=False):
+    if type(zp) == type(None):
+        print(f"{fgColors.red}zppPlotter object must be created first{fgColors.endc}")
+        sys.exit()
 
     # 1 - enable all pixels and get count rate (for comparison only)
     spadEnPattern = 0xFFFFFFFFFFFFFFFF
@@ -711,10 +721,9 @@ try:
                                  measTime=measTime,
                                  printTcrOnly=True)
 
-    # 2 - loop for each SPAD to get its TCR, UCR and CCR
-    for iSPAD in range(0, icp.nSpad):
-        sectionPrint(f"Testing SPAD index {iSPAD}")
-        spadEnPattern = 0x1<<iSPAD
+    for iSpad in range(0, icp.nSpad):
+        sectionPrint(f"Testing SPAD index {iSpad}")
+        spadEnPattern = 0x1<<iSpad
 
         # 2.1 - set ZPP module period to default measTime period to get TCR of the single SPAD
         setZppModule(client,
@@ -738,14 +747,56 @@ try:
                  offTimeSec=icp.sysClkPrd)
 
         # 2.5 - from the ZPP module, get the measurements of the SPAD with the optimal period
-        print(f"{fgColors.blue}Stats for SPAD {iSPAD}:{fgColors.endc}")
+        print(f"{fgColors.blue}Stats for SPAD {iSpad}:{fgColors.endc}")
         ZPP = measCntRate(spadEnPattern=spadEnPattern, measTime=zppPrd*nZppCycles)
 
         # put new data into zp data object
-        zp.newData(iSPAD, ZPP)
+        zp.newData(iSpad, ZPP)
+
+        # indicate which pixels are tested
+        zp.current_pixel_index = iSpad
 
         # update plot (once per measure for all the PDCs)
+        if update:
+            zp.updatePlot()
+
+    # indicate all tests are completed
+    zp.done_test_all_pixels = True
+
+
+# ---------------------------------------
+# --- Script main execution
+# ---------------------------------------
+sectionPrint("Script main execution")
+try:
+    # ---------------------------------------
+    # --- Object to hold the plots
+    # ---------------------------------------
+    # doSavePlot will save the plot at each measure.
+    # It will then increase the test time.
+    # Use it only to generate a .gif of the measures
+    zp = zppPlotter(figName="ZPP PLOTTER",
+                    nPdcMax=icp.nPdcMax,
+                    nSpad=icp.nSpad,
+                    doSavePlot=False)
+
+    # ---------------------------------------
+    # --- SPAD count rate logic
+    # ---------------------------------------
+    sectionPrint("SPAD count rate logic")
+    run_thread = True
+    if run_thread:
+        # running as a thread
+        thread_test = threading.Thread(target=test_all_pixels, args=[zp])
+        thread_test.start()
+
+        while not zp.done_test_all_pixels:
+            zp.updatePlot()
+        # update a last time
         zp.updatePlot()
+    else:
+        # not running as a thread
+        test_all_pixels(zp=zp, update=True)
 
     # export data
     zp.saveData()
@@ -755,10 +806,17 @@ try:
     print(f"{fgColors.bBlue}Test took {test_stop_time-test_start_time:.3f} seconds{fgColors.endc}")
     print(f"{fgColors.bBlue}Test completed, to exit, close figure{fgColors.endc}")
     plt.show(block=True)
-    print("\nFigure closed: exit program")
+    print("\nFigure closed... exit program")
 
-except KeyboardInterrupt:
-    print("\nKeyboard Interrupt: exit program")
+except (KeyboardInterrupt, SystemExit) as ex:
+    if "zp" in locals():
+        zp.run = False
+    if "thread_test" in locals():
+        thread_test.join()
+    if isinstance(ex, KeyboardInterrupt):
+        print(f"\n{fgColors.yellow}Keyboard Interrupt: exit program{fgColors.endc}")
+    else:
+        print(f"\n{fgColors.yellow}Program interrupted: exit program{fgColors.endc}")
 
 finally:
     if not 'test_stop_time' in locals():
