@@ -71,7 +71,7 @@ zynq.init()
 # -----------------------------------------------
 # --- prepare controller for acquisition
 # -----------------------------------------------
-icp = initCtlPdcFromClient(client=client, sysClkPrd=10e-9, pdcEn=0x1)
+icp = initCtlPdcFromClient(client=client, sysClkPrd=10e-9, pdcEn=0xF)
 
 
 # -----------------------------------------------
@@ -156,8 +156,8 @@ PDC_SETTING.PIXL = PIXL
 # === TIME REGISTER ===
 print("\n=== TIME REGISTER ===")
 HOLD_TIME = 150.0
-RECH_TIME = 40.0
-FLAG_TIME = 20.0
+RECH_TIME = 10.0
+FLAG_TIME = 10.0
 client.runPrint(f"pdcTime --hold {HOLD_TIME} --rech {RECH_TIME} --flag {FLAG_TIME} -g")
 PDC_SETTING.TIME = client.runReturnSplitInt('pdcTime -g')
 
@@ -237,7 +237,6 @@ CLK_PRD = icp.sysClkPrd
 MIN_ZPP_RECOMMENDED_PERIOD = 2e-3
 
 # trigger parameters
-<<<<<<< Updated upstream
     # NOTE: N_TRG: 32767 is the maximum possible value
     # NOTE: N_TRG: since min measure time is MIN_ZPP_RECOMMENDED_PERIOD,
     #       for any setting where N_TRG*TRG_PRD is less than MIN_ZPP_RECOMMENDED_PERIOD,
@@ -245,23 +244,14 @@ MIN_ZPP_RECOMMENDED_PERIOD = 2e-3
 N_TRG = 100  # number of trigger per loop
 TRG_ON = 50e-9  # seconds
 TRG_PRD = 10e-6  # seconds NOTE 655.36e-6 is the maximum possible value
-=======
-N_LOOP = 1  # number of trigger loops
-N_TRG = 5  # number of trigger per loop NOTE 32767 is the maximum possible value
-TRG_ON = 80e-9  # seconds
-TRG_PRD = 5e-6  # seconds NOTE 655.36e-6 is the maximum possible value
->>>>>>> Stashed changes
 
 N_TRG_CYC = int(TRG_PRD/CLK_PRD)
 N_TRG_ON = int(TRG_ON/CLK_PRD)
 N_TRG_OFF = int(N_TRG_CYC-N_TRG_ON)
-<<<<<<< Updated upstream
+
 measTime = 3*max(N_TRG*TRG_PRD, MIN_ZPP_RECOMMENDED_PERIOD) # ZPP period in seconds
     # NOTE: Using 3* to make sure the triggers are in the center of the ZPP period
     #       | measTime (wait) | measTime (N_TRG) | measTime (wait) |
-=======
-measTime = 3*N_TRG*TRG_PRD # ZPP period in seconds
->>>>>>> Stashed changes
 
 # make sure to disable before changing settings
 client.runPrint(f"ctlCfg -a TRGN -r 0x0000 -g")
@@ -281,12 +271,15 @@ client.runPrint(f"ctlCfg -a TRGL -r 0x{N_TRG_OFF:04x} -g")
 # ---------------------------------------
 sectionPrint("configure Controller ZPP module")
 CLK_PRD = icp.sysClkPrd
+class ZppModuleSetMethod(IntEnum):
+    app=0,
+    registers=1
 
-method  = "APP"
-if method == "APP":
+method = ZppModuleSetMethod.app
+if method == ZppModuleSetMethod.app:
     # new application available from 20250509 image
     client.runPrint(f"set-ctl-zpp-prd {measTime}")
-elif method == "REGISTER":
+elif method == ZppModuleSetMethod.registers:
     print("  Configure ZPP Timer High Period")
     ZPP_HIGH_PRD=measTime # seconds
     ZPP_HIGH_REG=int(ZPP_HIGH_PRD/CLK_PRD)
@@ -639,7 +632,6 @@ def measTrgRate(iPix, measTime, numPdc):
     client.runPrint(f"pdcPix --dis --index {iPix} --mode NONE; sleep 0.001")
     N_SPAD = [1]*numPdc
 
-<<<<<<< Updated upstream
     # all regrouped into a single command to remove host system execution time
     client.runPrint("ctlCmd -c MODE_TRG; " \
                     "ctlCmd -c RSTN_ZPP; " \
@@ -648,16 +640,6 @@ def measTrgRate(iPix, measTime, numPdc):
                     f"sleep {2.0*measTime/3.0:.06f}; " \
                     "ctlCmd -c MODE_ACQ; " \
                     "ctlCmd -c PACK_TRG_A; ")
-=======
-    #client.runPrint("ctlCmd -c MODE_TRG")
-    #client.runPrint("ctlCmd -c RSTN_ZPP")
-    client.runPrint("ctlCmd -c MODE_TRG; ctlCmd -c RSTN_ZPP")
-    time.sleep(measTime/3.0)
-    client.runSleep(f"ctlCfg -a TRGN -r 0x{0x8000+N_TRG:04x}", msSleep=measTime)
-    #client.runPrint("ctlCmd -c MODE_ACQ")
-    #client.runPrint("ctlCmd -c PACK_TRG_A")
-    client.runPrint("ctlCmd -c MODE_ACQ && ctlCmd -c PACK_TRG_A")
->>>>>>> Stashed changes
 
     # wait for the HDF5 result file
     db = waitForH5File()
