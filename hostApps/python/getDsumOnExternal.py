@@ -6,7 +6,7 @@
 #-- Description:
 #--      Using python ssh libraries to send remote commands to the ZCU102
 #--      This script prepare the Controller and the PDCs for an acquisition.
-#--      The acquisition is triggered by the coincidence engine.
+#--      The acquisition is triggered by an external signal.
 #--
 #-- Dependencies:
 #-- Revision:
@@ -333,7 +333,6 @@ FLAG_TIME =  2.0
 client.runPrint(f"pdcTime --hold {HOLD_TIME} --rech {RECH_TIME} --flag {FLAG_TIME} -g")
 PDC_SETTING.TIME = client.runReturnSplitInt('pdcTime -g')
 
-
 # === ANLG REGISTER ===
 print("\n=== ANLG REGISTER ===")
 #ANLG = 0x0000; # disabled
@@ -342,7 +341,7 @@ client.runPrint(f"pdcCfg -a ANLG -r 0x{ANLG:04x} -g")  # set analog monitor
 PDC_SETTING.ANLG = ANLG
 
 # === XXXX REGISTER ===
-# skipping registers STHH to DTXC
+# skipping registers ACQA to DBGC
 
 # === FIFO REGISTER ===
 print("\n=== FIFO REGISTER ===")
@@ -473,14 +472,9 @@ INT_TIMER = 100000000
 client.runPrint(f"ctlCfg -a TMR0 -r 0x{INT_TIMER&0xFFFF:04x} -g")
 client.runPrint(f"ctlCfg -a TMR1 -r 0x{0x8000|(INT_TIMER>>16)&0xFFFF:04x} -g")
 
-
-
-
-
-
-
-
-# ready to operate
+# ------------------------
+# --- ready to operate ---
+# ------------------------
 print("\n=== READY TO OPERATE ===")
 # NOTE: Implement here a specific routine
 try:

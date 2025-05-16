@@ -333,7 +333,6 @@ FLAG_TIME =  2.0
 client.runPrint(f"pdcTime --hold {HOLD_TIME} --rech {RECH_TIME} --flag {FLAG_TIME} -g")
 PDC_SETTING.TIME = client.runReturnSplitInt('pdcTime -g')
 
-
 # === ANLG REGISTER ===
 print("\n=== ANLG REGISTER ===")
 #ANLG = 0x0000; # disabled
@@ -355,7 +354,7 @@ client.runPrint(f"pdcCfg -a STHL -r 0x{STHL:04x} -g")  # set sum threshold low
 PDC_SETTING.STHL = STHL
 
 # === XXXX REGISTER ===
-# skipping registers STHH to DTXC
+# skipping registers ACQA to DBGC
 
 # === FIFO REGISTER ===
 print("\n=== FIFO REGISTER ===")
@@ -474,13 +473,6 @@ client.runPrint(f"ctlCfg -a COTH -r 0x{cothReg:04x} -g")
 
 
 # ---------------------------------------
-# --- return PDCs to acquisition mode ---
-# ---------------------------------------
-sectionPrint("return PDCs to acquisition mode")
-client.runPrint("ctlCmd -c MODE_ACQ")
-
-
-# ---------------------------------------
 # --- notify user of manual steps
 # ---------------------------------------
 try:
@@ -498,7 +490,9 @@ sectionPrint("start Controller FSM acquisition")
 client.runPrint(f"ctlCfg -a FSMM -r 0x{fsmmReg|0x3:04x} -g"); # starts the FSM
 
 
-# ready to operate
+# ------------------------
+# --- ready to operate ---
+# ------------------------
 print("\n=== READY TO OPERATE ===")
 # NOTE: Implement here a specific routine
 try:
