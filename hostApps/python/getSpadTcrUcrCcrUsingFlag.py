@@ -659,7 +659,7 @@ def getZppOptimalPeriod(allPdcsZppData, nSpad):
     print(f"{fgColors.blue}Average total count rate over {nb} PDCs is {avgTcrAll:.1f} for {nSpad} SPADs.{fgColors.endc}")
     avgPrd1Spad = avgPrdAll*nSpad
     print(f"{fgColors.blue}Average period per SPAD is {avgPrd1Spad:.3E}{fgColors.endc}")
-    zppPrd = avgPrd1Spad/5.0 # /2.0 TBD
+    zppPrd = avgPrd1Spad/5.0
     print(f"{fgColors.blue}Using ZPP period of {zppPrd:.3E}{fgColors.endc}")
     return zppPrd
 

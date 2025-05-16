@@ -238,7 +238,7 @@ class ZppModuleSetMethod(IntEnum):
     app=0,
     registers=1
 
-ZppModuleSetMethod.app
+method = ZppModuleSetMethod.app
 if method == ZppModuleSetMethod.app:
     # new application available from 20250509 image
     client.runPrint(f"set-ctl-zpp-prd {measTime}")
