@@ -936,7 +936,7 @@ try:
 
     # 5- enable the selected SPADs
     sectionPrint("Enable the selected SPADs")
-    for iPdc in range(0, icp.nPdcMax*0+1):
+    for iPdc in range(0, icp.nPdcMax):
         if not tp.pdcValid[iPdc]:
             continue
         # enable only the selected SPADs and print command (to copy to another script)
