@@ -96,7 +96,7 @@ sudo nmcli con up static-$interface
 # 7. Test communication to ZCU102
 function ssh_rsa_config {
 if [ ! -f ~/.ssh/id_rsa_zcu ]; then
-ssh-keygen -t rsa -f ~/.ssh/id_rsa_zcu
+ssh-keygen -t rsa -f ~/.ssh/id_rsa_zcu -N ""
 fi
 ssh-copy-id -i ~/.ssh/id_rsa_zcu.pub zynq@$SUBNET_PREFIX.16
 if [ ! -f "~/.ssh/config" ]; then

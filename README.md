@@ -62,4 +62,10 @@ These should help you visualize incoming information from your PDC and develop n
 New scripts might come in the future to help you develop more complex setups, either developped by the team at Sherbrooke or other user of the platform.
 
 
+## Updating your board
+
+After a new release has been published, if the the major or minor version from the release (Major.Minor.Patch) version has changend, you will need to update your board with the new image.
+To do so simply download the file from the release tab of this repo and extract it, as you did when getting starting.
+After flashing the SD card, its content have been wiped so you will need to re-register your RSA key used for SSH connection.
+You can do so by using the script provided and specifying the argument: `setupHosts/setup.sh --ssh_rsa_config`.
 
