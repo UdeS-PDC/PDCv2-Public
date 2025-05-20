@@ -97,9 +97,8 @@ sudo nmcli con up static-$interface
 function ssh_rsa_config {
 if [ ! -f ~/.ssh/id_rsa_zcu ]; then
 ssh-keygen -t rsa -f ~/.ssh/id_rsa_zcu
-ssh-copy-id -i ~/.ssh/id_rsa_zcu.pub zynq@102.180.0.16
 fi
-
+ssh-copy-id -i ~/.ssh/id_rsa_zcu.pub zynq@$SUBNET_PREFIX.16
 if [ ! -f "~/.ssh/config" ]; then
     echo "SSH config not found, creating one"
     mkdir -p ~/.ssh/

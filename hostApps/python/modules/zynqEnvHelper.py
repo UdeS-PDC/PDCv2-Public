@@ -65,7 +65,7 @@ if not "PROJECT_PATH" in locals():
 if os.path.isfile("/etc/debian_version"):
     HOST_APPS_PATH = f"{PROJECT_PATH}/hostApps/cpp/debianBasedOS"
 elif os.path.isfile("/etc/redhat-release"):
-    HOST_APPS_PATH = f"{PROJECT_PATH}/hostApps/cpp/debianBasedOS"
+    HOST_APPS_PATH = f"{PROJECT_PATH}/hostApps/cpp/redHatBasedOS"
 else:
     print(f"{fgColors.red}[{moduleName}] ERROR: Unsupported OS. Please ask for support with your OS info.{fgColors.endc}")
     sys.exit()
